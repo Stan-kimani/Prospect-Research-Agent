@@ -1,0 +1,597 @@
+{
+  "name": "Prospect Research",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "8a4fe0c2-3fd1-4a46-9f28-e090e030f543",
+      "name": "Daily 7am Trigger"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-001",
+              "name": "industry",
+              "value": "Marketing Agencies",
+              "type": "string"
+            },
+            {
+              "id": "cfg-002",
+              "name": "location",
+              "value": "Kenya, Uganda, Tanzania",
+              "type": "string"
+            },
+            {
+              "id": "cfg-003",
+              "name": "icp",
+              "value": "Medium to large organizations with 50+ employees, established brand presence, active website",
+              "type": "string"
+            },
+            {
+              "id": "cfg-004",
+              "name": "num_prospects",
+              "value": 10,
+              "type": "number"
+            },
+            {
+              "id": "cfg-005",
+              "name": "run_date",
+              "value": "={{ $now.toISODate() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        224,
+        0
+      ],
+      "id": "14727eca-bd18-4f8b-ae6c-2f6d9b324b49",
+      "name": "Config"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=={{ $json.chatInput }}",
+        "options": {
+          "systemMessage": "CRITICAL INSTRUCTION: You MUST return raw JSON only. No explanations. No markdown. No text before or after.\n\nWhen you finish using tools, immediately output this JSON structure with the data you found:\n\n{\"prospects\":[{\"company\":\"KWE Marketing Agency\",\"website\":\"https://kwetumarketingagency.co.ke\",\"email\":\"info@kwetumarketingagency.co.ke\",\"decision_maker\":\"Paul Kigumo\",\"decision_maker_title\":\"CEO\",\"linkedin\":\"https://linkedin.com/in/paulkigumo\",\"location\":\"Nairobi, Kenya\",\"description\":\"Digital marketing agency\",\"company_size\":\"50-100\",\"score\":85,\"priority\":\"Warm\"}]}\n\nSTEP BY STEP:\n1. Use Apify tool with query: \"marketing agency Nairobi Kenya\"\n2. From Apify results, extract organicResults[0].title (company name) and organicResults[0].url (website)\n3. Use Firecrawl to scrape that website's contact page\n4. Extract any email (look for @ symbol)\n5. Look for \"CEO\", \"Founder\", \"Director\" names\n6. If found, add them to decision_maker field\n7. IMMEDIATELY output the JSON above with your found data\n\nRULES:\n- NEVER say \"I couldn't find\" or \"I need to try again\"\n- NEVER output markdown like ```json\n- ALWAYS output raw JSON starting with { and ending with }\n- If an email isn't found, leave \"\" empty string\n- Output must happen in your FINAL response\n\nTOOL USAGE COMPLETE → OUTPUT JSON NOW.",
+          "maxIterations": 25
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        728,
+        0
+      ],
+      "id": "4d332195-0208-4f86-92f1-b4d369b4d95b",
+      "name": "Research Agent"
+    },
+    {
+      "parameters": {
+        "endpointUrl": "=https://mcp.firecrawl.dev/v2/mcp",
+        "authentication": "bearerAuth",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.2,
+      "position": [
+        800,
+        224
+      ],
+      "id": "bfd947ef-d848-48f4-87c3-dff0d272afa5",
+      "name": "Firecrawl MCP",
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "UhVssXTRyr9bG3nj",
+          "name": "Bearer Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get Apify search results from the agent output\nconst items = $input.all();\nlet prospects = [];\n\n// Try multiple possible data paths\nfor (const item of items) {\n  // Look for Apify results in various possible locations\n  const raw = item.json.output || \n               item.json.text || \n               item.json.results || \n               JSON.stringify(item.json);\n  \n  try {\n    let parsed = null;\n    \n    // Try to parse as JSON\n    if (typeof raw === 'string') {\n      parsed = JSON.parse(raw);\n    } else if (typeof raw === 'object') {\n      parsed = raw;\n    }\n    \n    // Handle Apify's specific output structure\n    if (parsed) {\n      // Case 1: Direct prospects array\n      if (parsed.prospects && Array.isArray(parsed.prospects)) {\n        prospects = parsed.prospects;\n      }\n      // Case 2: Apify organic results\n      else if (parsed.organicResults && Array.isArray(parsed.organicResults)) {\n        prospects = parsed.organicResults.map(result => ({\n          company: result.title || result.url?.replace(/^https?:\\/\\/(www\\.)?/, '').split('/')[0] || '',\n          website: result.url || '',\n          description: result.description || '',\n          location: '', // Will need to infer from search\n          email: '',\n          phone: '',\n          company_size: '',\n          decision_maker: '',\n          decision_maker_title: '',\n          linkedin: result.url?.includes('linkedin.com') ? result.url : '',\n          industry: 'Marketing Agency',\n          score: 50,\n          priority: 'Warm',\n          score_reason: 'Found via Google search'\n        }));\n      }\n      // Case 3: Individual company object\n      else if (parsed.company || parsed.website) {\n        prospects = [parsed];\n      }\n      // Case 4: Search results from Apify's default format\n      else if (parsed.items && Array.isArray(parsed.items)) {\n        prospects = parsed.items;\n      }\n    }\n  } catch(e) {\n    console.log('Parse error:', e.message);\n  }\n}\n\n// If no prospects found, create a fallback with sample data for testing\nif (prospects.length === 0) {\n  // Create sample prospects from the successful Apify run\n  prospects = [\n    {\n      company: \"Sample Marketing Agency - Kenya\",\n      industry: \"Marketing Agency\",\n      location: \"Nairobi, Kenya\",\n      website: \"https://example.com\",\n      email: \"\",\n      phone: \"\",\n      company_size: \"50-250\",\n      description: \"Digital marketing agency in Kenya\",\n      decision_maker: \"\",\n      decision_maker_title: \"\",\n      linkedin: \"\",\n      score: 50,\n      priority: \"Cold\",\n      score_reason: \"Initial discovery, needs verification\",\n      date_added: new Date().toISOString().split('T')[0]\n    }\n  ];\n}\n\n// Format as clean output\nreturn prospects.map(p => ({\n  json: {\n    company: p.company || p.name || p.title || 'Unknown',\n    industry: p.industry || 'Marketing Agency',\n    location: p.location || p.country || 'East Africa',\n    website: p.website || p.url || p.link || '',\n    email: p.email || p.contact_email || '',\n    phone: p.phone || p.contact_phone || '',\n    company_size: p.company_size || p.size || p.employee_count || '',\n    description: p.description || p.snippet || p.about || '',\n    decision_maker: p.decision_maker || p.contact_name || p.owner || '',\n    decision_maker_title: p.decision_maker_title || p.title || p.position || '',\n    linkedin: (p.linkedin || p.linkedin_url || '').includes('linkedin.com/in/') ? (p.linkedin || p.linkedin_url) : '',\n    score: typeof p.score === 'number' ? p.score : 50,\n    priority: p.priority || 'Cold',\n    score_reason: p.score_reason || 'Needs manual verification',\n    source: 'Apify Google Search',\n    date_added: new Date().toISOString().split('T')[0]\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        0
+      ],
+      "id": "123fa472-fd67-4ccf-9e25-89588c1d185a",
+      "name": "Parse Prospect Output"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "7f7b6547-f5b7-4bd7-be55-60c313268a43",
+              "name": "chatInput",
+              "value": "=Use Apify Search to find 10 marketing agencies in Kenya, Uganda, and Tanzania.\n\nSearch queries to run:\n1. \"marketing agency Nairobi Kenya\"\n2. \"digital agency Kampala Uganda\" \n3. \"marketing firm Dar es Salaam Tanzania\"\n\nWhen Apify returns results, look for the \"organicResults\" array. For each result:\n- Company name = title field\n- Website = url field\n- Description = description field\n\nThen for EACH company with a website:\n- Use Firecrawl to scrape their website\n- Look for email addresses (anything with @)\n- Look for leadership/team page\n\nIf you find partial data, still return it. Better to return 5 complete prospects than none.\n\nReturn JSON: {\"prospects\":[{\"company\":\"\",\"website\":\"\",\"email\":\"\",\"decision_maker\":\"\",\"decision_maker_title\":\"\",\"linkedin\":\"\"}]}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        448,
+        0
+      ],
+      "id": "fcc41a94-faba-4a57-a8fb-129ca704a310",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1IiSjAUokZPE03ZvRCNf39UKQWwPLbvN_GVoRg_ErQMU",
+          "mode": "list",
+          "cachedResultName": "Lead PipeLine",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1IiSjAUokZPE03ZvRCNf39UKQWwPLbvN_GVoRg_ErQMU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1488835688,
+          "mode": "list",
+          "cachedResultName": "Sheet6",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1IiSjAUokZPE03ZvRCNf39UKQWwPLbvN_GVoRg_ErQMU/edit#gid=1488835688"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "company",
+              "displayName": "company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "industry",
+              "displayName": "industry",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "location",
+              "displayName": "location",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "website",
+              "displayName": "website",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "company_size",
+              "displayName": "company_size",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "description",
+              "displayName": "description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "decision_maker",
+              "displayName": "decision_maker",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "decision_maker_title",
+              "displayName": "decision_maker_title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "linkedin",
+              "displayName": "linkedin",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "score",
+              "displayName": "score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "score_reason",
+              "displayName": "score_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "date_added",
+              "displayName": "date_added",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2032,
+        0
+      ],
+      "id": "b8d30fa8-5857-4ebf-87a9-7df0eca73e6d",
+      "name": "Append to Sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "P4RqEP0XntCsl3XK",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Find 10 marketing agencies in Kenya, Uganda, and Tanzania.\n\nFor EACH agency, you MUST:\n1. Search: \"[company name] CEO email\" \n2. Search: \"[company name] founder LinkedIn\"\n3. Visit their website's /contact or /about page\n4. Extract any email addresses you find\n5. Extract leadership names from \"Our Team\" sections\n\nIf you find partial data, still return it with what you have.\nBetter to return 5 complete prospects than 10 empty ones.\n\nReturn JSON with: company, website, email, decision_maker, decision_maker_title, linkedin",
+        "actorId": {
+          "__rl": true,
+          "value": "nFJndFXA5zjCTuudP",
+          "mode": "list",
+          "cachedResultName": "Google Search Results Scraper",
+          "cachedResultUrl": "https://console.apify.com/actors/nFJndFXA5zjCTuudP/input"
+        },
+        "customBody": "={{ { \"queries\": $json.query || \"marketing agency Kenya CEO email\", \"maxPagesPerQuery\": 1, \"resultsPerPage\": 5 } }}",
+        "timeout": 60000,
+        "memory": 256
+      },
+      "type": "@apify/n8n-nodes-apify.apifyTool",
+      "typeVersion": 1,
+      "position": [
+        928,
+        224
+      ],
+      "id": "43b142cb-b04a-4242-899a-237c0af9b864",
+      "name": "Apify Search",
+      "credentials": {
+        "apifyApi": {
+          "id": "ojMHIlk4cSK2BS5Y",
+          "name": "Apify account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "anthropic/claude-3.5-haiku",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        672,
+        224
+      ],
+      "id": "acac0fa5-5dc1-4bfa-a818-4037c73803ce",
+      "name": "OpenRouter Chat Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "9tW9DRkfJPoRkmP3",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "1b8b4dd0-16e0-437b-b7f8-bebf02a5d061",
+              "leftValue": "={{ $json.no_new_prospects }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1808,
+        0
+      ],
+      "id": "c8e497a5-7311-4b23-aa1a-3d61ee595b46",
+      "name": "Check for New Prospects"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\n// Get prospects from previous node\nconst newProspects = $('Parse Prospect Output').all();\n\n// Get Google Sheets data using HTTP request\n// You'll need to add an HTTP Request node or use this approach\n\n// For now, let's assume you want to check duplicates by fetching from sheet\n// But since we can't call Google Sheets directly from code without credentials,\n// we need to restructure\n\n// SIMPLER APPROACH: Skip deduplication for now\nreturn newProspects;for (const item of $input.all()) {\n  item.json.myNewField = 1;\n}\n\nreturn $input.all();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1584,
+        0
+      ],
+      "id": "9fa11116-ecc3-4660-90e1-24efc68ade1a",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Force extract JSON from agent's text output\nconst items = $input.all();\nconst extractedProspects = [];\n\nfor (const item of items) {\n  const agentOutput = item.json.output || item.json.text || JSON.stringify(item.json);\n  \n  // Try multiple JSON extraction patterns\n  const patterns = [\n    /\\[\\s*\\{\\s*\"company\"[\\s\\S]*?\\}\\s*\\]/,  // Array of prospects\n    /\\{\\s*\"prospects\"\\s*:\\s*\\[[\\s\\S]*?\\]\\s*\\}/,  // prospects object\n    /\\{\\s*\"company\"[\\s\\S]*?\"score\"[\\s\\S]*?\\}/,  // Single prospect\n    /```json\\s*([\\s\\S]*?)\\s*```/,  // Markdown code block\n    /(\\{\\s*\"company\"[\\s\\S]*?\\})/  // Any JSON object with company\n  ];\n  \n  let found = false;\n  \n  for (const pattern of patterns) {\n    const match = agentOutput.match(pattern);\n    if (match) {\n      try {\n        let parsed = match[1] || match[0];\n        let jsonData = JSON.parse(parsed);\n        \n        // Handle different structures\n        let prospects = [];\n        if (jsonData.prospects && Array.isArray(jsonData.prospects)) {\n          prospects = jsonData.prospects;\n        } else if (Array.isArray(jsonData)) {\n          prospects = jsonData;\n        } else if (jsonData.company) {\n          prospects = [jsonData];\n        }\n        \n        // Clean and validate each prospect\n        for (const p of prospects) {\n          extractedProspects.push({\n            json: {\n              company: p.company || p.name || 'Unknown',\n              industry: p.industry || 'Marketing Agency',\n              location: p.location || p.country || 'East Africa',\n              website: p.website || p.url || p.link || '',\n              email: p.email || p.contact_email || '',\n              phone: p.phone || '',\n              company_size: p.company_size || p.size || '',\n              description: p.description || p.about || '',\n              decision_maker: p.decision_maker || p.contact_name || p.ceo || p.founder || '',\n              decision_maker_title: p.decision_maker_title || p.title || p.position || '',\n              linkedin: (p.linkedin || p.linkedin_url || '').includes('linkedin.com/in/') ? (p.linkedin || p.linkedin_url) : '',\n              score: p.score || 50,\n              priority: p.priority || 'Cold',\n              score_reason: p.score_reason || 'Extracted from agent output',\n              source: 'Research Agent',\n              date_added: new Date().toISOString().split('T')[0]\n            }\n          });\n        }\n        found = true;\n        break;\n      } catch(e) {\n        console.log('Parse attempt failed:', e.message);\n      }\n    }\n  }\n  \n  // If still no data found, create a fallback from visible data in the text\n  if (!found && extractedProspects.length === 0) {\n    // Try to extract company name from agent's text\n    const companyMatch = agentOutput.match(/company[\"\\s:]+([A-Z][a-zA-Z\\s]+?)(?=[\"\\s,]|$)/i);\n    const emailMatch = agentOutput.match(/[\\w\\.-]+@[\\w\\.-]+\\.\\w+/);\n    const linkedinMatch = agentOutput.match(/linkedin\\.com\\/in\\/[\\w-]+/);\n    \n    if (companyMatch || emailMatch) {\n      extractedProspects.push({\n        json: {\n          company: companyMatch ? companyMatch[1].trim() : 'Unknown',\n          industry: 'Marketing Agency',\n          location: 'East Africa',\n          website: '',\n          email: emailMatch ? emailMatch[0] : '',\n          phone: '',\n          company_size: '',\n          description: '',\n          decision_maker: '',\n          decision_maker_title: '',\n          linkedin: linkedinMatch ? `https://${linkedinMatch[0]}` : '',\n          score: 30,\n          priority: 'Cold',\n          score_reason: 'Extracted from text pattern matching',\n          source: 'Agent Text Parsing',\n          date_added: new Date().toISOString().split('T')[0]\n        }\n      });\n    }\n  }\n}\n\n// Return what we found\nif (extractedProspects.length === 0) {\n  return [{\n    json: {\n      error: 'No prospects extracted',\n      raw_agent_output: items[0]?.json?.output || items[0]?.json?.text || 'No output found',\n      timestamp: new Date().toISOString()\n    }\n  }];\n}\n\nreturn extractedProspects;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1136,
+        0
+      ],
+      "id": "d6670db4-5011-4193-91ee-e230edf762cb",
+      "name": "Code in JavaScript1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Daily 7am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Firecrawl MCP": {
+      "ai_tool": [
+        [
+          {
+            "node": "Research Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Research Agent": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Prospect Output": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Research Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apify Search": {
+      "ai_tool": [
+        [
+          {
+            "node": "Research Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Research Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check for New Prospects": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Append to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Check for New Prospects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Parse Prospect Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "f7be5f6d-50af-4e72-9288-314065ec72c4",
+  "meta": {
+    "instanceId": "3122bf3edc78ed0efd720619531d9edbed5cf11a848661af961e78ae47c7eee6"
+  },
+  "id": "4mYL1gs2freVixqe",
+  "tags": []
+}
